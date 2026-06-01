@@ -9,7 +9,7 @@
  * 如未配置 Key，自动降级到 OMDB (每天 1000 次免费)
  */
 
-const fetch = require('node-fetch');
+const _fetchPkg = import('node-fetch'); async function fetch(u,o){return (await _fetchPkg).default(u,o);}
 
 // 从环境变量读取（生产中通过 .env 注入）
 const TMDB_KEY = process.env.TMDB_API_KEY || '';
