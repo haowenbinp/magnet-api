@@ -1,6 +1,6 @@
 /**
  * src/meta.js
- * 影片元数据：TMDB 提供封面/演员/简介 + 豆瓣补充评分
+ * TMDB 影片元数据 + 豆瓣评分（通过豆瓣搜索 API 获取）
  */
 
 let fetchFn;
@@ -9,89 +9,80 @@ async function getFetch() {
   return fetchFn;
 }
 
-const TMDB_KEY   = process.env.TMDB_API_KEY || '';
-const TMDB_BASE  = 'https://api.themoviedb.org/3';
-const TMDB_IMG   = 'https://image.tmdb.org/t/p';
-const TIMEOUT_MS = 8000;
+const TMDB_KEY  = process.env.TMDB_API_KEY || '';
+const TMDB_BASE = 'https://api.themoviedb.org/3';
+const TMDB_IMG  = 'https://image.tmdb.org/t/p';
+const TIMEOUT   = 8000;
 
-// ─── 通用 fetch ───────────────────────────────────────────────────────────────
 async function apiFetch(url, opts = {}) {
   const fetch = await getFetch();
   const ctrl  = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
+  const timer = setTimeout(() => ctrl.abort(), TIMEOUT);
   try {
     const res = await fetch(url, {
       signal: ctrl.signal,
-      headers: { 'Accept': 'application/json', ...opts.headers },
+      headers: { 'Accept': 'application/json', ...(opts.headers || {}) },
       ...opts,
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return opts.text ? await res.text() : await res.json();
+    if (opts.text) return await res.text();
+    return await res.json();
   } finally {
     clearTimeout(timer);
   }
 }
 
-// ─── 豆瓣评分（搜索页解析）────────────────────────────────────────────────────
+// ── 豆瓣评分：通过豆瓣 subject_suggest 接口 ──────────────────────────────────
 async function fetchDoubanRating(title, year) {
   try {
-    const q   = year ? `${title} ${year}` : title;
-    const url = `https://www.douban.com/search?cat=1002&q=${encodeURIComponent(q)}`;
-    const html = await apiFetch(url, {
-      text: true,
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept-Language': 'zh-CN,zh;q=0.9',
-        'Referer': 'https://www.douban.com/',
-      },
-    });
-
-    // 解析评分：<span class="rating_nums">8.5</span>
-    const ratingMatch = html.match(/rating_nums[^>]*>([\d.]+)<\/span>/);
-    if (ratingMatch) return ratingMatch[1];
-
-    // 备用：<span class="number">8.5</span>
-    const numMatch = html.match(/"number">([\d.]+)<\/span>/);
-    if (numMatch) return numMatch[1];
-
-    return null;
-  } catch (e) {
-    console.warn('[豆瓣] rating fetch failed:', e.message);
-    return null;
-  }
-}
-
-// ─── 豆瓣 API（非官方镜像，作为备选）─────────────────────────────────────────
-async function fetchDoubanAPI(title, year) {
-  try {
-    const q   = encodeURIComponent(title);
-    const url = `https://movie.douban.com/j/subject_suggest?q=${q}`;
+    // 方案1：豆瓣 suggest API（返回包含评分的 JSON）
+    const url = `https://movie.douban.com/j/subject_suggest?q=${encodeURIComponent(title)}`;
     const data = await apiFetch(url, {
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Referer': 'https://movie.douban.com/',
+        'Accept': 'application/json, text/javascript, */*',
       },
     });
 
     if (!Array.isArray(data) || !data.length) return null;
 
-    // 找年份最接近的结果
+    // 优先匹配年份
     const match = year
-      ? data.find(d => d.year === String(year)) || data[0]
-      : data[0];
+      ? data.find(d => d.year === String(year) && d.type === 'movie')
+        || data.find(d => d.type === 'movie')
+        || data[0]
+      : data.find(d => d.type === 'movie') || data[0];
 
-    return {
-      doubanId:     match.id,
-      doubanRating: match.rating || null,
-      doubanTitle:  match.title  || null,
-    };
-  } catch (e) {
-    console.warn('[豆瓣API] failed:', e.message);
+    if (match?.rating) {
+      console.log(`[豆瓣] "${title}" → ${match.rating} (id:${match.id})`);
+      return { rating: match.rating, id: match.id, title: match.title };
+    }
     return null;
+  } catch (e) {
+    console.warn('[豆瓣] suggest failed:', e.message);
   }
+
+  // 方案2：通过豆瓣 API v2 镜像
+  try {
+    const url = `https://douban.8610000.xyz/v2/movie/search?q=${encodeURIComponent(title)}&count=3`;
+    const data = await apiFetch(url);
+    const subjects = data?.subjects || [];
+    const match = year
+      ? subjects.find(s => s.year === String(year)) || subjects[0]
+      : subjects[0];
+    if (match?.rating?.average) {
+      console.log(`[豆瓣镜像] "${title}" → ${match.rating.average}`);
+      return { rating: String(match.rating.average), id: match.id, title: match.title };
+    }
+  } catch (e) {
+    console.warn('[豆瓣镜像] failed:', e.message);
+  }
+
+  return null;
 }
 
-// ─── TMDB ─────────────────────────────────────────────────────────────────────
+// ── TMDB ──────────────────────────────────────────────────────────────────────
 async function fetchFromTMDB(title, year) {
   if (!TMDB_KEY) return null;
 
@@ -119,7 +110,6 @@ async function fetchFromTMDB(title, year) {
   const directors = (detail.credits?.crew || [])
     .filter(c => c.job === 'Director').map(c => c.name);
 
-  const genres  = (detail.genres || []).map(g => g.name);
   const runtime = detail.runtime || movie.runtime;
 
   return {
@@ -128,23 +118,24 @@ async function fetchFromTMDB(title, year) {
     originalTitle: detail.original_title || movie.original_title,
     year:          (detail.release_date || movie.release_date || '').slice(0, 4),
     overview:      detail.overview || movie.overview || '',
-    poster:        detail.poster_path   ? `${TMDB_IMG}/w500${detail.poster_path}`   : null,
+    poster:        detail.poster_path   ? `${TMDB_IMG}/w500${detail.poster_path}`    : null,
     backdrop:      detail.backdrop_path ? `${TMDB_IMG}/w1280${detail.backdrop_path}` : null,
     tmdbRating:    (detail.vote_average || movie.vote_average || 0).toFixed(1),
     runtime:       runtime ? `${Math.floor(runtime/60)}h ${runtime%60}m` : '',
     runtimeMin:    runtime || 0,
-    genres, directors, cast,
-    language:      detail.original_language || '',
-    countries:     (detail.production_countries || []).map(c => c.name),
+    genres:        (detail.genres || []).map(g => g.name),
+    directors,
+    cast,
+    language:  detail.original_language || '',
+    countries: (detail.production_countries || []).map(c => c.name),
   };
 }
 
-// ─── 主入口 ────────────────────────────────────────────────────────────────────
+// ── 主入口 ────────────────────────────────────────────────────────────────────
 async function fetchMovieMeta(title, year = '') {
-  // 并发：TMDB + 豆瓣评分同时请求
   const [tmdbRes, doubanRes] = await Promise.allSettled([
     fetchFromTMDB(title, year),
-    fetchDoubanAPI(title, year),
+    fetchDoubanRating(title, year),
   ]);
 
   const tmdb   = tmdbRes.status   === 'fulfilled' ? tmdbRes.value   : null;
@@ -152,21 +143,19 @@ async function fetchMovieMeta(title, year = '') {
 
   if (!tmdb) {
     return { title, year, overview:'', poster:null, backdrop:null,
-             rating:'', ratingSource:'', runtime:'', genres:[],
-             directors:[], cast:[], source:'none' };
+             rating:'', ratingSource:'none', runtime:'',
+             genres:[], directors:[], cast:[], source:'none' };
   }
 
-  // 豆瓣评分优先，降级用 TMDB 评分
-  const doubanRating = douban?.doubanRating || null;
-  const rating       = doubanRating || tmdb.tmdbRating;
-  const ratingSource = doubanRating ? 'douban' : 'tmdb';
+  const rating       = douban?.rating || tmdb.tmdbRating;
+  const ratingSource = douban?.rating ? 'douban' : 'tmdb';
 
   return {
     ...tmdb,
     rating,
-    ratingSource,  // 前端用来显示"豆瓣 X.X"或"TMDB X.X"
-    doubanId:    douban?.doubanId    || null,
-    doubanTitle: douban?.doubanTitle || null,
+    ratingSource,
+    doubanId:    douban?.id    || null,
+    doubanTitle: douban?.title || null,
     source: 'tmdb+douban',
   };
 }
