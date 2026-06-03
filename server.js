@@ -1,7 +1,3 @@
-// load .env
-const fs = require("fs");
-try { fs.readFileSync(".env","utf8").split("\n").forEach(l => { const [k,...v]=l.split("="); if(k&&v.length) process.env[k.trim()]=v.join("=").trim(); }); } catch(e) {}
-
 /**
  * magnet-api  —  磁力片源抓取 & 影片元数据 API
  * 运行: node server.js
@@ -73,15 +69,16 @@ async function handleSearch(query, res) {
 
 async function handleMeta(query, res) {
   const title = (query.title || '').trim();
-  const year  = query.year || '';
+  const year  = query.year  || '';
+  const type  = query.type  || 'movie'; // 'movie' or 'tv'
 
   if (!title) {
     res.writeHead(400);
     return res.end(JSON.stringify({ error: '缺少参数 title' }));
   }
 
-  console.log(`[META] "${title}" year=${year}`);
-  const meta = await fetchMovieMeta(title, year);
+  console.log(`[META] "${title}" year=${year} type=${type}`);
+  const meta = await fetchMovieMeta(title, year, type);
   res.writeHead(200);
   res.end(JSON.stringify(meta));
 }
