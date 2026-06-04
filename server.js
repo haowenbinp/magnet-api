@@ -11,6 +11,10 @@ const { fetchMovieMeta } = require('./src/meta');
 
 const PORT = process.env.PORT || 3000;
 
+// 启动时打印环境变量状态
+console.log('[ENV] PORT:', PORT);
+console.log('[ENV] TMDB_API_KEY:', process.env.TMDB_API_KEY ? \`已读取 (\${process.env.TMDB_API_KEY.length}位)\` : '未读取');
+
 // ─── 极简路由 (无需 express 依赖) ─────────────────────────────────────────────
 const ROUTES = {
   '/api/search':  handleSearch,   // GET /api/search?q=星际穿越&page=1
