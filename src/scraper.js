@@ -230,12 +230,12 @@ async function scrapeTPB(query) {
 
 // ── Knaben API ────────────────────────────────────────────────────────────────
 // 聚合多源（TPB / 1337x / RARBG / Nyaa 等），免费无需 Key
-// 正确用法：POST https://knaben.org/api/v1 + JSON body
+// 正确用法：POST https://api.knaben.org/v1 + JSON body（注意域名是 api.knaben.org，不是 knaben.org）
 async function scrapeKnaben(query) {
   try {
-    const data = await httpPostJSON('https://knaben.org/api/v1', {
-      search: query,
-      search_type: '300%',   // 模糊匹配，标题包含关键词即可
+    const data = await httpPostJSON('https://api.knaben.org/v1', {
+      query: query,
+      search_type: '100%',   // 合法值: "score" 或百分比字符串
       order_by: 'seeders',
       order_direction: 'desc',
       from: 0,
@@ -248,6 +248,7 @@ async function scrapeKnaben(query) {
     return hits.map(t => ({
       _source: 'knaben',
       title:   t.title || '',
+      // hash 和 magnetUrl 都可能为 null，优先用现成的 magnetUrl，否则用 hash 拼，两者都没有就跳过（filter 会处理）
       magnet:  t.magnetUrl || (t.hash ? makeMagnet(t.hash, t.title) : ''),
       size:    t.bytes ? (t.bytes > 1073741824 ? (t.bytes/1073741824).toFixed(2)+' GB' : (t.bytes/1048576).toFixed(0)+' MB') : '',
       seeds:   parseInt(t.seeders)  || 0,
