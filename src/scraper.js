@@ -148,38 +148,6 @@ function makeMagnet(hash, name) {
     + `&tr=udp%3A%2F%2Ftracker.openbittorrent.com%3A6969%2Fannounce`;
 }
 
-// ── YTS API ───────────────────────────────────────────────────────────────────
-async function scrapeYTS(query) {
-  try {
-    const url = `https://yts.mx/api/v2/list_movies.json?query_term=${encodeURIComponent(query)}&limit=20&sort_by=seeds`;
-    const data = await getJSON(url);
-    const movies = data?.data?.movies || [];
-    const results = [];
-    for (const movie of movies) {
-      for (const t of (movie.torrents || [])) {
-        const name = `${movie.title} (${movie.year}) ${t.quality} ${t.type}`;
-        results.push({
-          _source: 'yts',
-          title:   name,
-          magnet:  makeMagnet(t.hash, name),
-          size:    t.size || '',
-          seeds:   t.seeds  || 0,
-          leeches: t.peers  || 0,
-          quality: t.quality.includes('2160') ? '4K' : parseQuality(t.quality),
-          codec:   parseCodec(t.type + ' ' + (t.video_codec || '')),
-          hdr:     parseHDR(name),
-          audio:   t.audio_channels || '',
-        });
-      }
-    }
-    console.log(`[YTS] ${results.length} results for "${query}"`);
-    return results;
-  } catch (e) {
-    console.warn('[YTS] failed:', e.message);
-    return [];
-  }
-}
-
 // ── EZTV API ──────────────────────────────────────────────────────────────────
 async function scrapeEZTV(query) {
   try {
@@ -317,15 +285,13 @@ async function scrapeTorrentio(query, imdbId = null) {
 // ── 主入口 ────────────────────────────────────────────────────────────────────
 async function searchMagnets(query, page, imdbId = null) {
   console.log(`[scraper] searching: "${query}" imdbId=${imdbId||'none'}`);
-  const [rYTS, rEZTV, rTPB, rKnaben, rTorrentio] = await Promise.allSettled([
-    scrapeYTS(query),
+  const [rEZTV, rTPB, rKnaben, rTorrentio] = await Promise.allSettled([
     scrapeEZTV(query),
     scrapeTPB(query),
     scrapeKnaben(query),
     scrapeTorrentio(query, imdbId),
   ]);
   let results = [
-    ...(rYTS.status       === 'fulfilled' ? rYTS.value       : []),
     ...(rEZTV.status      === 'fulfilled' ? rEZTV.value      : []),
     ...(rTPB.status       === 'fulfilled' ? rTPB.value       : []),
     ...(rKnaben.status    === 'fulfilled' ? rKnaben.value    : []),
