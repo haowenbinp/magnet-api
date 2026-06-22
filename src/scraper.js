@@ -185,18 +185,126 @@ async function scrapeTPB(query) {
   return [];
 }
 
+// ── Knaben API ────────────────────────────────────────────────────────────────
+// 聚合多源（含 1337x / RARBG 历史数据），免费无需 Key
+async function scrapeKnaben(query) {
+  try {
+    const url = `https://api.knaben.eu/v1/search?search=${encodeURIComponent(query)}&size=30&from=0&orderBy=seeders&orderDirection=desc`;
+    const data = await getJSON(url);
+    const hits = data?.hits || [];
+    console.log(`[Knaben] ${hits.length} results for "${query}"`);
+    return hits.map(t => ({
+      _source: 'knaben',
+      title:   t.title || '',
+      magnet:  t.hash ? makeMagnet(t.hash, t.title) : (t.magnet || ''),
+      size:    t.bytes ? (t.bytes > 1073741824 ? (t.bytes/1073741824).toFixed(2)+' GB' : (t.bytes/1048576).toFixed(0)+' MB') : '',
+      seeds:   parseInt(t.seeders)  || 0,
+      leeches: parseInt(t.leechers) || 0,
+      quality: parseQuality(t.title || ''),
+      codec:   parseCodec(t.title   || ''),
+      hdr:     parseHDR(t.title     || ''),
+      audio:   parseAudio(t.title   || ''),
+    })).filter(t => t.magnet && t.title);
+  } catch (e) {
+    console.warn('[Knaben] failed:', e.message);
+    return [];
+  }
+}
+
+// ── BTDigg ────────────────────────────────────────────────────────────────────
+// 中文内容索引最强，搜索中文片名时尤其有效
+async function scrapeBTDigg(query) {
+  try {
+    const url = `https://btdiggg.com/search?info=1&order=0&q=${encodeURIComponent(query)}`;
+    const html = await httpGet(url, {
+      'Accept': 'text/html,application/xhtml+xml',
+      'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+    });
+    const results = [];
+    const allMagnets = [...html.matchAll(/href="(magnet:\?xt=urn:btih:[^"&]+[^"]*)"/gi)];
+    const allTitles  = [...html.matchAll(/class="item-name"[^>]*>\s*<a[^>]*>([^<]{3,120})<\/a>/gi)];
+    const allSizes   = [...html.matchAll(/(\d+(?:\.\d+)?\s*(?:GB|MB|KB))/gi)];
+    const allSeeds   = [...html.matchAll(/(\d+)\s*seed/gi)];
+
+    const count = Math.min(allMagnets.length, allTitles.length, 20);
+    for (let i = 0; i < count; i++) {
+      const title  = (allTitles[i]?.[1] || '').trim();
+      const magnet = allMagnets[i]?.[1] || '';
+      const size   = allSizes[i]?.[0]   || '';
+      const seeds  = parseInt(allSeeds[i]?.[1]) || 0;
+      if (!magnet || !title) continue;
+      results.push({
+        _source: 'btdigg',
+        title, magnet, size, seeds, leeches: 0,
+        quality: parseQuality(title),
+        codec:   parseCodec(title),
+        hdr:     parseHDR(title),
+        audio:   parseAudio(title),
+      });
+    }
+    console.log(`[BTDigg] ${results.length} results for "${query}"`);
+    return results;
+  } catch (e) {
+    console.warn('[BTDigg] failed:', e.message);
+    return [];
+  }
+}
+
+// ── Torrentio (Stremio 生态) ───────────────────────────────────────────────────
+// 专注电影+美剧，质量高，支持 IMDB ID 精确匹配
+async function scrapeTorrentio(query, imdbId = null) {
+  try {
+    if (!imdbId) {
+      console.log(`[Torrentio] no imdbId, skipping "${query}"`);
+      return [];
+    }
+    const type = 'movie'; // movie / series 由调用方传入可扩展
+    const url  = `https://torrentio.strem.fun/sort=seeders|qualityfilter=other,scr,cam/stream/${type}/${imdbId}.json`;
+    const data = await getJSON(url);
+    const streams = data?.streams || [];
+    console.log(`[Torrentio] ${streams.length} results for imdb=${imdbId}`);
+    return streams.map(s => {
+      const rawTitle = s.title || '';
+      const nameLine = rawTitle.split('\n')[0].trim();
+      const seedM    = (rawTitle.match(/👤\s*(\d+)/) || [])[1];
+      const sizeM    = (rawTitle.match(/💾\s*([\d.]+\s*(?:GB|MB))/) || [])[1];
+      return {
+        _source: 'torrentio',
+        title:   nameLine || rawTitle,
+        magnet:  s.infoHash ? makeMagnet(s.infoHash, nameLine) : '',
+        size:    sizeM || '',
+        seeds:   parseInt(seedM) || 0,
+        leeches: 0,
+        quality: parseQuality(nameLine),
+        codec:   parseCodec(nameLine),
+        hdr:     parseHDR(nameLine),
+        audio:   parseAudio(nameLine),
+      };
+    }).filter(t => t.magnet && t.title);
+  } catch (e) {
+    console.warn('[Torrentio] failed:', e.message);
+    return [];
+  }
+}
+
 // ── 主入口 ────────────────────────────────────────────────────────────────────
-async function searchMagnets(query) {
-  console.log(`[scraper] searching: "${query}"`);
-  const [rYTS, rEZTV, rTPB] = await Promise.allSettled([
+async function searchMagnets(query, page, imdbId = null) {
+  console.log(`[scraper] searching: "${query}" imdbId=${imdbId||'none'}`);
+  const [rYTS, rEZTV, rTPB, rKnaben, rBTDigg, rTorrentio] = await Promise.allSettled([
     scrapeYTS(query),
     scrapeEZTV(query),
     scrapeTPB(query),
+    scrapeKnaben(query),
+    scrapeBTDigg(query),
+    scrapeTorrentio(query, imdbId),
   ]);
   let results = [
-    ...(rYTS.status  === 'fulfilled' ? rYTS.value  : []),
-    ...(rEZTV.status === 'fulfilled' ? rEZTV.value : []),
-    ...(rTPB.status  === 'fulfilled' ? rTPB.value  : []),
+    ...(rYTS.status       === 'fulfilled' ? rYTS.value       : []),
+    ...(rEZTV.status      === 'fulfilled' ? rEZTV.value      : []),
+    ...(rTPB.status       === 'fulfilled' ? rTPB.value       : []),
+    ...(rKnaben.status    === 'fulfilled' ? rKnaben.value    : []),
+    ...(rBTDigg.status    === 'fulfilled' ? rBTDigg.value    : []),
+    ...(rTorrentio.status === 'fulfilled' ? rTorrentio.value : []),
   ].filter(r => r.magnet && r.title);
 
   // 去重
