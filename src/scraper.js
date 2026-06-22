@@ -44,6 +44,49 @@ async function getJSON(url, headers = {}) {
   return JSON.parse(text);
 }
 
+// POST 请求，发 JSON body，收 JSON 响应（Knaben 等需要 POST 的接口用）
+function httpPostJSON(url, bodyObj, extraHeaders = {}) {
+  return new Promise((resolve, reject) => {
+    const parsed = new URL(url);
+    const mod = parsed.protocol === 'https:' ? https : http;
+    const bodyStr = JSON.stringify(bodyObj);
+    const req = mod.request({
+      hostname: parsed.hostname,
+      path:     parsed.pathname + parsed.search,
+      method:   'POST',
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
+        'Accept': 'application/json',
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(bodyStr),
+        ...extraHeaders,
+      },
+      timeout: TIMEOUT_MS,
+    }, (res) => {
+      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        return httpPostJSON(res.headers.location, bodyObj, extraHeaders).then(resolve).catch(reject);
+      }
+      if (res.statusCode !== 200) {
+        res.resume();
+        return reject(new Error(`HTTP ${res.statusCode} for ${url}`));
+      }
+      let data = '';
+      res.setEncoding('utf8');
+      res.on('data', chunk => data += chunk);
+      res.on('end', () => {
+        try {
+          if (data.trimStart().startsWith('<')) throw new Error('Got HTML instead of JSON');
+          resolve(JSON.parse(data));
+        } catch (e) { reject(e); }
+      });
+    });
+    req.on('error', reject);
+    req.on('timeout', () => { req.destroy(); reject(new Error(`Timeout: ${url}`)); });
+    req.write(bodyStr);
+    req.end();
+  });
+}
+
 // ── 工具函数 ──────────────────────────────────────────────────────────────────
 function parseQuality(t) {
   t = t.toUpperCase();
@@ -186,20 +229,29 @@ async function scrapeTPB(query) {
 }
 
 // ── Knaben API ────────────────────────────────────────────────────────────────
-// 聚合多源（含 1337x / RARBG 历史数据），免费无需 Key
+// 聚合多源（TPB / 1337x / RARBG / Nyaa 等），免费无需 Key
+// 正确用法：POST https://knaben.org/api/v1 + JSON body
 async function scrapeKnaben(query) {
   try {
-    const url = `https://api.knaben.eu/v1/search?search=${encodeURIComponent(query)}&size=30&from=0&orderBy=seeders&orderDirection=desc`;
-    const data = await getJSON(url);
+    const data = await httpPostJSON('https://knaben.org/api/v1', {
+      search: query,
+      search_type: '300%',   // 模糊匹配，标题包含关键词即可
+      order_by: 'seeders',
+      order_direction: 'desc',
+      from: 0,
+      size: 30,
+      hide_unsafe: true,
+      hide_xxx: true,
+    });
     const hits = data?.hits || [];
     console.log(`[Knaben] ${hits.length} results for "${query}"`);
     return hits.map(t => ({
       _source: 'knaben',
       title:   t.title || '',
-      magnet:  t.hash ? makeMagnet(t.hash, t.title) : (t.magnet || ''),
+      magnet:  t.magnetUrl || (t.hash ? makeMagnet(t.hash, t.title) : ''),
       size:    t.bytes ? (t.bytes > 1073741824 ? (t.bytes/1073741824).toFixed(2)+' GB' : (t.bytes/1048576).toFixed(0)+' MB') : '',
       seeds:   parseInt(t.seeders)  || 0,
-      leeches: parseInt(t.leechers) || 0,
+      leeches: parseInt(t.peers)    || 0,
       quality: parseQuality(t.title || ''),
       codec:   parseCodec(t.title   || ''),
       hdr:     parseHDR(t.title     || ''),
@@ -207,45 +259,6 @@ async function scrapeKnaben(query) {
     })).filter(t => t.magnet && t.title);
   } catch (e) {
     console.warn('[Knaben] failed:', e.message);
-    return [];
-  }
-}
-
-// ── BTDigg ────────────────────────────────────────────────────────────────────
-// 中文内容索引最强，搜索中文片名时尤其有效
-async function scrapeBTDigg(query) {
-  try {
-    const url = `https://btdiggg.com/search?info=1&order=0&q=${encodeURIComponent(query)}`;
-    const html = await httpGet(url, {
-      'Accept': 'text/html,application/xhtml+xml',
-      'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
-    });
-    const results = [];
-    const allMagnets = [...html.matchAll(/href="(magnet:\?xt=urn:btih:[^"&]+[^"]*)"/gi)];
-    const allTitles  = [...html.matchAll(/class="item-name"[^>]*>\s*<a[^>]*>([^<]{3,120})<\/a>/gi)];
-    const allSizes   = [...html.matchAll(/(\d+(?:\.\d+)?\s*(?:GB|MB|KB))/gi)];
-    const allSeeds   = [...html.matchAll(/(\d+)\s*seed/gi)];
-
-    const count = Math.min(allMagnets.length, allTitles.length, 20);
-    for (let i = 0; i < count; i++) {
-      const title  = (allTitles[i]?.[1] || '').trim();
-      const magnet = allMagnets[i]?.[1] || '';
-      const size   = allSizes[i]?.[0]   || '';
-      const seeds  = parseInt(allSeeds[i]?.[1]) || 0;
-      if (!magnet || !title) continue;
-      results.push({
-        _source: 'btdigg',
-        title, magnet, size, seeds, leeches: 0,
-        quality: parseQuality(title),
-        codec:   parseCodec(title),
-        hdr:     parseHDR(title),
-        audio:   parseAudio(title),
-      });
-    }
-    console.log(`[BTDigg] ${results.length} results for "${query}"`);
-    return results;
-  } catch (e) {
-    console.warn('[BTDigg] failed:', e.message);
     return [];
   }
 }
@@ -290,12 +303,11 @@ async function scrapeTorrentio(query, imdbId = null) {
 // ── 主入口 ────────────────────────────────────────────────────────────────────
 async function searchMagnets(query, page, imdbId = null) {
   console.log(`[scraper] searching: "${query}" imdbId=${imdbId||'none'}`);
-  const [rYTS, rEZTV, rTPB, rKnaben, rBTDigg, rTorrentio] = await Promise.allSettled([
+  const [rYTS, rEZTV, rTPB, rKnaben, rTorrentio] = await Promise.allSettled([
     scrapeYTS(query),
     scrapeEZTV(query),
     scrapeTPB(query),
     scrapeKnaben(query),
-    scrapeBTDigg(query),
     scrapeTorrentio(query, imdbId),
   ]);
   let results = [
@@ -303,7 +315,6 @@ async function searchMagnets(query, page, imdbId = null) {
     ...(rEZTV.status      === 'fulfilled' ? rEZTV.value      : []),
     ...(rTPB.status       === 'fulfilled' ? rTPB.value       : []),
     ...(rKnaben.status    === 'fulfilled' ? rKnaben.value    : []),
-    ...(rBTDigg.status    === 'fulfilled' ? rBTDigg.value    : []),
     ...(rTorrentio.status === 'fulfilled' ? rTorrentio.value : []),
   ].filter(r => r.magnet && r.title);
 
