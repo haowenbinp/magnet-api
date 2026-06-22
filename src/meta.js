@@ -78,7 +78,7 @@ async function fetchMovie(title, year) {
     let detail = movie;
     try {
       detail = await getJSON(
-        `${TMDB_BASE}/movie/${movie.id}?api_key=${TMDB_KEY}&language=zh-CN&append_to_response=credits`
+        `${TMDB_BASE}/movie/${movie.id}?api_key=${TMDB_KEY}&language=zh-CN&append_to_response=credits,external_ids`
       );
     } catch (e) {}
 
@@ -92,6 +92,7 @@ async function fetchMovie(title, year) {
     return {
       mediaType:     'movie',
       tmdbId:        detail.id || movie.id,
+      imdbId:        detail.external_ids?.imdb_id || detail.imdb_id || null,
       title:         detail.title || movie.title,
       originalTitle: detail.original_title || movie.original_title,
       year:          (detail.release_date || movie.release_date || '').slice(0, 4),
@@ -126,7 +127,7 @@ async function fetchTV(title, year) {
     let detail = show;
     try {
       detail = await getJSON(
-        `${TMDB_BASE}/tv/${show.id}?api_key=${TMDB_KEY}&language=zh-CN&append_to_response=credits,aggregate_credits`
+        `${TMDB_BASE}/tv/${show.id}?api_key=${TMDB_KEY}&language=zh-CN&append_to_response=credits,aggregate_credits,external_ids`
       );
     } catch (e) {}
 
@@ -158,6 +159,7 @@ async function fetchTV(title, year) {
     return {
       mediaType:     'tv',
       tmdbId:        detail.id || show.id,
+      imdbId:        detail.external_ids?.imdb_id || null,
       title:         detail.name || show.name,
       originalTitle: detail.original_name || show.original_name,
       year:          (detail.first_air_date || show.first_air_date || '').slice(0, 4),
@@ -196,7 +198,7 @@ async function fetchMovieMeta(title, year = '', type = 'movie') {
   if (!tmdb) {
     return { title, year, overview:'', poster:null, backdrop:null,
              rating:'', ratingSource:'none', runtime:'', genres:[],
-             directors:[], cast:[], source:'none', mediaType: type };
+             directors:[], cast:[], source:'none', mediaType: type, imdbId: null };
   }
 
   const rating       = douban?.rating || tmdb.tmdbRating;
