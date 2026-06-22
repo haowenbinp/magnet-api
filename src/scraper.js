@@ -121,6 +121,19 @@ function parseAudio(t) {
   if (t.includes('AC3'))    return 'AC3';
   return '';
 }
+// 检测标题里是否带中文字幕/国语标识
+// 覆盖：常见压制组签名（ParkHD 等）、中文字幕关键词、繁简标识、国语配音标识
+const CHINESE_SUBS_PATTERNS = [
+  /-ParkHD\b/i,
+  /中文字幕/, /中字/, /简中/, /繁中/, /简体/, /繁体/,
+  /国语/, /国配/, /粤语/,
+  /\bCHS\b/i, /\bCHT\b/i, /\bGB\b/, /\bBIG5\b/i,
+  /\bMandarin\b/i, /\bCantonese\b/i,
+];
+function detectChineseSubs(title) {
+  if (!title) return false;
+  return CHINESE_SUBS_PATTERNS.some(re => re.test(title));
+}
 function healthScore(seeds) {
   if (seeds >= 100) return 5;
   if (seeds >= 30)  return 4;
@@ -335,6 +348,7 @@ async function searchMagnets(query, page, imdbId = null) {
     size: r.size, seeds: r.seeds, leeches: r.leeches,
     health: healthScore(r.seeds), quality: r.quality,
     codec: r.codec, hdr: r.hdr, audio: r.audio,
+    hasChineseSubs: detectChineseSubs(r.title),
   }));
 }
 
